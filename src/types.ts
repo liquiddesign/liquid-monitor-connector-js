@@ -43,6 +43,13 @@ export interface InitOptions {
   captureNetwork?: boolean
   /** Request URLs matching any entry are never reported by the network handler. */
   networkIgnoreUrls?: Array<string | RegExp>
+  /**
+   * When true, report only errors whose stack or source.file references an external
+   * `.js` file on the page origin (your webpack/Vite bundles). Inline scripts —
+   * including third-party tracking pixels injected after cookie consent — are dropped.
+   * IIFE: `data-own-code-only="true"`.
+   */
+  ownCodeOnly?: boolean
   /** Last-chance hook: mutate the event, or return null/false to drop it. */
   beforeSend?: (event: LqdeckEvent) => LqdeckEvent | null | false | undefined
   /** User/session identity attached to every event. */

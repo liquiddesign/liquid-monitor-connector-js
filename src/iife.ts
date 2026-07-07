@@ -9,7 +9,7 @@
  *           data-key="jsk_..." defer></script>
  *
  * Optional attributes: data-sample-rate, data-capture-console="false",
- * data-capture-network="false", data-max-errors-per-page.
+ * data-capture-network="false", data-max-errors-per-page, data-own-code-only="true".
  */
 import { init } from './index'
 
@@ -27,5 +27,6 @@ if (script instanceof HTMLScriptElement && script.dataset.url && script.dataset.
       : {}),
     captureConsole: script.dataset.captureConsole !== 'false',
     captureNetwork: script.dataset.captureNetwork !== 'false',
+    ...(script.dataset.ownCodeOnly === 'true' ? { ownCodeOnly: true } : {}),
   })
 }

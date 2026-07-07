@@ -22,7 +22,9 @@ The ready-made snippet (with the project's key filled in) is available in the LQ
         data-key="jsk_..." defer></script>
 ```
 
-The script initializes itself from the `data-*` attributes. Optional attributes: `data-sample-rate`, `data-max-errors-per-page`, `data-capture-console="false"`, `data-capture-network="false"`.
+The script initializes itself from the `data-*` attributes. Optional attributes: `data-sample-rate`, `data-max-errors-per-page`, `data-capture-console="false"`, `data-capture-network="false"`, `data-own-code-only="true"`.
+
+On sites with heavy third-party script noise (cookie consent, GTM, trackers), add `data-own-code-only="true"` and consider `data-capture-network="false"` — see [Filtering noise / own code only](#filtering-noise--own-code-only) below.
 
 ### npm package (bundlers, React, Vue)
 
@@ -55,6 +57,7 @@ init({
     captureConsole: true,                 // report console.error calls
     captureNetwork: true,                 // report fetch/XHR 5xx + network failures
     networkIgnoreUrls: [/analytics\./],   // never report these request URLs
+    ownCodeOnly: false,                   // only errors from .js bundles on page origin
     beforeSend: (event) => event,         // mutate or drop (return null) events
     identity: { userId: 42 },             // attached to every event
 })
@@ -90,6 +93,82 @@ report(error, { where: 'checkout submit' })
 import { createLqdeckPlugin } from '@liquiddesign/liquid-monitor-connector-js/vue'
 
 app.use(createLqdeckPlugin())
+```
+
+## Filtering noise / own code only
+
+On production e-shops and marketing sites the connector captures **all** JavaScript errors by default — including massive noise from third-party scripts (cookie consent, GTM, Leadhub, ad blockers, etc.).
+
+### Why origin-based filtering fails
+
+Browsers attribute **inline** scripts — including scripts injected and executed by third-party libraries after consent — to the **document URL**, not the vendor's domain. Both `source.file` and the top stack frames therefore show your origin even for foreign tracking pixels. A naive filter like “pass when stack or source contains `location.origin`” lets these through: your origin alone cannot distinguish your inline glue from a third-party inline pixel.
+
+Example (production): cookie-consent runs a callback that injects an inline tracking script; the error surfaces as `source.file: https://www.example.com/product` with stack frames on that same document URL, while the real culprit is `cookieconsent.js` on another host deeper in the stack.
+
+### Built-in: `ownCodeOnly` (recommended)
+
+Set `ownCodeOnly: true` (or `data-own-code-only="true"` on the script tag) to report only errors whose **stack or `source.file` references an external `.js` file on the page origin** — typically your webpack/Vite bundles. Inline scripts (document URL without `.js`) are dropped.
+
+```html
+<script src="https://<monitor>/js/lqdeck-connector.min.js"
+        data-url="https://<monitor>/api/browser"
+        data-key="jsk_..."
+        data-own-code-only="true"
+        data-capture-network="false" defer></script>
+```
+
+```ts
+init({
+    url: 'https://<monitor>/api/browser',
+    key: 'jsk_...',
+    ownCodeOnly: true,
+    captureNetwork: false, // failed requests are mostly ad blockers / third-party trackers
+})
+```
+
+**Trade-off:** this whitelist also drops errors from **your own** inline glue in templates (e.g. `dataLayer.push` snippets), because those are inline too. For many shops that is acceptable — inline glue is mostly analytics. If you rely on catching inline template bugs, use the blocklist approach below or a custom `beforeSend`.
+
+Helpers are exported if you want to compose manually: `createOwnCodeOnlyBeforeSend`, `eventTouchesOwnJsBundle`, `createOriginOwnJsPattern`.
+
+### Manual `beforeSend` recipe (full control)
+
+`beforeSend` requires calling `init()` yourself (the script tag cannot set it). Equivalent to `ownCodeOnly`:
+
+```js
+LqdeckMonitor.init({
+    url: 'https://<monitor>/api/browser',
+    key: 'jsk_...',
+    captureNetwork: false,
+    beforeSend: function (e) {
+        var origin = location.origin.split('.').join('\\.');
+        var ourJs = new RegExp(origin + '[^\\s]*\\.js');
+        var hit = function (s) { return typeof s === 'string' && ourJs.test(s); };
+        return hit(e.stack) || (e.source && hit(e.source.file)) ? e : null;
+    },
+});
+```
+
+**Latte / template engines:** write the snippet so it does not contain `{` immediately followed by `$` (Latte `{$var}` collision) and avoid nested quote collisions inside `<script>`. Escaping the origin via `split('.').join('\\.')` avoids regex literals with `{}`.
+
+### Alternative: third-party domain blocklist
+
+Keeps your inline template glue, but requires maintaining a list of vendor domains:
+
+```js
+beforeSend: function (e) {
+    var blocked = [
+        'prijmout-cookies.cz',
+        'googletagmanager.com',
+        'leadhub.co',
+    ];
+    var haystack = (e.stack || '') + ' ' + (e.source && e.source.file || '');
+    for (var i = 0; i < blocked.length; i++) {
+        if (haystack.indexOf(blocked[i]) !== -1) {
+            return null;
+        }
+    }
+    return e;
+}
 ```
 
 ## How it talks to the monitor

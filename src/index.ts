@@ -8,6 +8,12 @@ import { VERSION } from './version'
 import type { ErrorLevel, InitOptions, LqdeckEvent } from './types'
 
 export type { ErrorLevel, EventKind, InitOptions, LqdeckEvent } from './types'
+export {
+  createOriginOwnJsPattern,
+  createOwnCodeOnlyBeforeSend,
+  eventTouchesOwnJsBundle,
+  escapeOriginForRegExp,
+} from './filters/ownCodeOnly'
 export { VERSION }
 
 let client: Client | null = null

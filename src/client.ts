@@ -1,4 +1,5 @@
 import { Dedup } from './dedup'
+import { createOwnCodeOnlyBeforeSend } from './filters/ownCodeOnly'
 import { Transport } from './transport'
 import { truncate } from './serialize'
 import { VERSION } from './version'
@@ -19,7 +20,7 @@ export interface CaptureInput {
   extra?: Record<string, unknown>
 }
 
-export interface ResolvedConfig extends Required<Omit<InitOptions, 'beforeSend' | 'identity'>> {
+export interface ResolvedConfig extends Required<Omit<InitOptions, 'beforeSend' | 'identity' | 'ownCodeOnly'>> {
   beforeSend?: InitOptions['beforeSend']
 }
 
@@ -40,6 +41,8 @@ export class Client {
   private readonly transport: Transport
 
   constructor(options: InitOptions) {
+    const { beforeSend, ownCodeOnly, ...rest } = options
+
     this.config = {
       enabled: true,
       sampleRate: 1,
@@ -49,8 +52,9 @@ export class Client {
       captureConsole: true,
       captureNetwork: true,
       networkIgnoreUrls: [],
-      ...options,
+      ...rest,
       url: options.url.replace(/\/+$/, ''),
+      beforeSend: composeBeforeSend(beforeSend, ownCodeOnly),
     }
     this.identity = options.identity ?? null
     this.dedup = new Dedup(this.config.dedupeWindowMs)
@@ -183,5 +187,30 @@ export class Client {
       clearTimeout(this.flushTimer)
       this.flushTimer = null
     }
+  }
+}
+
+function composeBeforeSend(
+  beforeSend: InitOptions['beforeSend'],
+  ownCodeOnly: boolean | undefined,
+): InitOptions['beforeSend'] {
+  const ownCodeFilter = ownCodeOnly ? createOwnCodeOnlyBeforeSend() : undefined
+
+  if (!ownCodeFilter) {
+    return beforeSend
+  }
+
+  if (!beforeSend) {
+    return ownCodeFilter
+  }
+
+  return (event) => {
+    const filtered = ownCodeFilter(event)
+
+    if (!filtered) {
+      return null
+    }
+
+    return beforeSend(filtered)
   }
 }
