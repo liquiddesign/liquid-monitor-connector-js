@@ -14,6 +14,37 @@ function dispatchRejectionEvent(reason: unknown): void {
   window.dispatchEvent(event)
 }
 
+/**
+ * Minimal XHR stand-in for the network handler tests. The handler only relies
+ * on open/send being patchable, addEventListener, and `status` — a send() here
+ * synchronously replays a scripted event sequence (error/abort/timeout always
+ * precede loadend, matching the XHR spec).
+ */
+class FakeXMLHttpRequest extends EventTarget {
+  static nextEnding: { status: number; events: string[] } = { status: 200, events: ['load'] }
+
+  status = 0
+
+  open(_method: string, _url: string | URL): void {}
+
+  send(): void {
+    const { status, events } = FakeXMLHttpRequest.nextEnding
+    this.status = status
+
+    for (const type of [...events, 'loadend']) {
+      this.dispatchEvent(new Event(type))
+    }
+  }
+}
+
+function sendFakeXhr(ending: { status: number; events: string[] }, url = 'https://api.example/data'): void {
+  FakeXMLHttpRequest.nextEnding = ending
+
+  const xhr = new (XMLHttpRequest as unknown as typeof FakeXMLHttpRequest)()
+  ;(xhr as unknown as XMLHttpRequest).open('GET', url)
+  ;(xhr as unknown as XMLHttpRequest).send()
+}
+
 describe('installed handlers', () => {
   let fetchSpy: FetchSpy
 
@@ -139,6 +170,90 @@ describe('installed handlers', () => {
     const event = fetchSpy.events()[0]!
     expect(event.kind).toBe('network')
     expect(event.code).toBe('NetworkError')
+  })
+
+  it('does not report fetch requests cancelled via AbortController', async () => {
+    init(TEST_OPTIONS)
+
+    fetchSpy.mock.mockImplementation(async (url: unknown) => {
+      if (String(url).includes('monitor.test')) {
+        return new Response('{"accepted":1}', { status: 201 })
+      }
+
+      throw new DOMException('The operation was aborted.', 'AbortError')
+    })
+
+    await expect(window.fetch('https://api.example/aborted')).rejects.toThrow('The operation was aborted.')
+    await flush()
+
+    expect(fetchSpy.events()).toHaveLength(0)
+  })
+
+  it('reports fetch timeouts (AbortSignal.timeout) as NetworkTimeout', async () => {
+    init(TEST_OPTIONS)
+
+    fetchSpy.mock.mockImplementation(async (url: unknown) => {
+      if (String(url).includes('monitor.test')) {
+        return new Response('{"accepted":1}', { status: 201 })
+      }
+
+      throw new DOMException('The operation timed out.', 'TimeoutError')
+    })
+
+    await expect(window.fetch('https://api.example/slow')).rejects.toThrow('The operation timed out.')
+    await flush()
+
+    const event = fetchSpy.events()[0]!
+    expect(event.code).toBe('NetworkTimeout')
+    expect(event.message).toContain('→ timeout')
+  })
+
+  it('reports XHR responses with 5xx status as weak network events', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXMLHttpRequest)
+    init(TEST_OPTIONS)
+
+    sendFakeXhr({ status: 500, events: ['load'] })
+    await flush()
+
+    const event = fetchSpy.events()[0]!
+    expect(event.kind).toBe('network')
+    expect(event.code).toBe('HTTP_500')
+    expect(event.message).toContain('GET https://api.example/data')
+  })
+
+  it('does not report successful or aborted XHR requests', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXMLHttpRequest)
+    init(TEST_OPTIONS)
+
+    sendFakeXhr({ status: 200, events: ['load'] })
+    sendFakeXhr({ status: 0, events: ['abort'] })
+    await flush()
+
+    expect(fetchSpy.events()).toHaveLength(0)
+  })
+
+  it('reports XHR timeouts as NetworkTimeout', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXMLHttpRequest)
+    init(TEST_OPTIONS)
+
+    sendFakeXhr({ status: 0, events: ['timeout'] })
+    await flush()
+
+    const event = fetchSpy.events()[0]!
+    expect(event.code).toBe('NetworkTimeout')
+    expect(event.message).toContain('→ timeout')
+  })
+
+  it('reports XHR network errors (status 0 without abort/timeout) as network failure', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXMLHttpRequest)
+    init(TEST_OPTIONS)
+
+    sendFakeXhr({ status: 0, events: ['error'] })
+    await flush()
+
+    const event = fetchSpy.events()[0]!
+    expect(event.code).toBe('NetworkError')
+    expect(event.message).toContain('→ network failure')
   })
 
   it('never reports requests to the monitor itself or ignored URLs', async () => {

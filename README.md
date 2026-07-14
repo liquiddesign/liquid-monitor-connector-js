@@ -7,7 +7,7 @@ Captures:
 - uncaught exceptions (`window.onerror`)
 - unhandled promise rejections
 - `console.error` calls (optional, default on)
-- failed network requests — fetch/XHR 5xx responses and network failures (optional, default on, reported as *weak* warnings)
+- failed network requests — fetch/XHR 5xx responses, network failures and timeouts (optional, default on, reported as *weak* warnings; deliberately cancelled requests — `xhr.abort()`, `AbortController`, page navigation — are never reported)
 - manual reports via `captureError()` / `captureMessage()`
 
 ## Installation

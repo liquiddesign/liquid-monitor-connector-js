@@ -8,8 +8,10 @@ interface XhrMeta {
 const XHR_META = '__lqdeckMeta'
 
 /**
- * Patches window.fetch and XMLHttpRequest to report server errors (5xx) and
- * outright network failures as weak `network` events (level warning).
+ * Patches window.fetch and XMLHttpRequest to report server errors (5xx),
+ * outright network failures and timeouts as weak `network` events (level
+ * warning). Deliberately cancelled requests (xhr.abort(), AbortController,
+ * page navigation) are never reported.
  *
  * Anti-loop: requests to the monitor itself and any configured ignore URLs
  * are never reported (the reporting transport additionally uses the original
@@ -34,8 +36,16 @@ export function installNetworkHandler(client: Client): () => void {
 
         return response
       } catch (err) {
-        if (!client.isNetworkUrlIgnored(url)) {
-          captureNetworkEvent(client, method, url, err instanceof Error ? err.message : 'network failure', 'NetworkError')
+        const name = err instanceof Error ? err.name : undefined
+
+        if (name !== 'AbortError' && !client.isNetworkUrlIgnored(url)) {
+          captureNetworkEvent(
+            client,
+            method,
+            url,
+            name === 'TimeoutError' ? 'timeout' : err instanceof Error ? err.message : 'network failure',
+            name === 'TimeoutError' ? 'NetworkTimeout' : 'NetworkError',
+          )
         }
 
         throw err
@@ -65,13 +75,31 @@ export function installNetworkHandler(client: Client): () => void {
       const meta = (this as XMLHttpRequest & Record<string, unknown>)[XHR_META] as XhrMeta | undefined
 
       if (meta && !client.isNetworkUrlIgnored(meta.url)) {
+        // status === 0 covers three mutually exclusive endings (error, abort,
+        // timeout) whose events all precede loadend — track abort/timeout so
+        // deliberately cancelled requests are never reported.
+        let aborted = false
+        let timedOut = false
+
+        this.addEventListener('abort', () => {
+          aborted = true
+        }, { once: true })
+        this.addEventListener('timeout', () => {
+          timedOut = true
+        }, { once: true })
         this.addEventListener('loadend', () => {
           if (this.status >= 500) {
             captureNetworkEvent(client, meta.method, meta.url, `HTTP ${this.status}`, `HTTP_${this.status}`)
-          } else if (this.status === 0) {
-            captureNetworkEvent(client, meta.method, meta.url, 'network failure', 'NetworkError')
+          } else if (this.status === 0 && !aborted) {
+            captureNetworkEvent(
+              client,
+              meta.method,
+              meta.url,
+              timedOut ? 'timeout' : 'network failure',
+              timedOut ? 'NetworkTimeout' : 'NetworkError',
+            )
           }
-        })
+        }, { once: true })
       }
 
       return originalSend.apply(this, args as Parameters<typeof originalSend>)
